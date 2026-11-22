@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>🧬 Gene Bond</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #050508;
+            font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
+            touch-action: none;
+        }
+        canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const MAP_W = 80, MAP_H = 60, TILE_SIZE = 16, PANEL_W = 240;
+    const FLOOR_DECO = ["🌿","🍄","🪨","💎","⭐","🌸","🍂","🪴","✦","❋","∘","⊹","✧","◈"];
+    const WALL_DECO = ["🧱","⬛","▪","▮","▬","▤"];
+    const BG_EMOJIS = ["🧬","🦎","🦍","👻","🦅","🐍","🧜","🔮","🟢","🦂","🐢","💀","🦁","👑"];
+    
+    // Level color themes based on depth
+    const THEMES = [
+        {bg: [0.02, 0.04, 0.02], floor: [0.10, 0.12, 0.10]}, // Forest (1-3)
+        {bg: [0.02, 0.02, 0.05], floor: [0.08, 0.08, 0.12]}, // Cave (4-6)
+        {bg: [0.05, 0.02, 0.02], floor: [0.12, 0.08, 0.08]}, // Inferno (7-9)
+        {bg: [0.04, 0.02, 0.05], floor: [0.10, 0.06, 0.12]}, // Abyss (10+)
+    ];
+
+    const Tile = { WALL: 0, FLOOR: 1, WATER: 2, EXIT: 3, SPIKE: 4, SPRING: 5 };
+    const GameState = { TITLE: 0, PLAYING: 1, DEAD: 2, WIN: 3, MATING_CHOICE: 4 };
+    
+    const Ability = { Speed:0, Strength:1, Stealth:2, Flight:3, Poison:4, Charm:5, Telepathy:6, Regeneration:7, Venom:8, Shell:9, Phase:10 };
+    const AbilityData = {
+        [Ability.Speed]:{emoji:"⚡",name:"Speed",desc:"Move faster"}, [Ability.Strength]:{emoji:"💪",name:"Strength",desc:"Smash walls, +dmg"},
+        [Ability.Stealth]:{emoji:"👻",name:"Stealth",desc:"Hidden from AI"}, [Ability.Flight]:{emoji:"🦋",name:"Flight",desc:"Walk on water"},
+        [Ability.Poison]:{emoji:"🐍",name:"Poison",desc:"+2 Combat dmg"}, [Ability.Charm]:{emoji:"💕",name:"Charm",desc:"Pacify hostiles"},
+        [Ability.Telepathy]:{emoji:"👁",name:"Telepathy",desc:"See all map"}, [Ability.Regeneration]:{emoji:"💚",name:"Regen",desc:"Heal 1 HP/turn"},
+        [Ability.Venom]:{emoji:"☠",name:"Venom",desc:"2-tile dmg aura"}, [Ability.Shell]:{emoji:"🛡",name:"Shell",desc:"Halve incoming dmg"},
+        [Ability.Phase]:{emoji:"🌀",name:"Phase",desc:"Walk through walls"}
+    };
+    const AllAbilities = Object.keys(Ability).map(k=>Ability[k]);
+
+    const Species = { Swiftling:0, Brute:1, Phantom:2, Skywing:3, Serpent:4, Siren:5, Oracle:6, Slime:7, Scorpion:8, Turtle:9, Wraith:10, Chimera:11, Alpha:12, Player:13 };
+    const SpeciesData = {
+        [Species.Swiftling]:{emoji:"🦎",name:"Swiftling",abilities:[Ability.Speed]}, [Species.Brute]:{emoji:"🦍",name:"Brute",abilities:[Ability.Strength]},
+        [Species.Phantom]:{emoji:"👻",name:"Phantom",abilities:[Ability.Stealth]}, [Species.Skywing]:{emoji:"🦅",name:"Skywing",abilities:[Ability.Flight]},
+        [Species.Serpent]:{emoji:"🐍",name:"Serpent",abilities:[Ability.Poison]}, [Species.Siren]:{emoji:"🧜",name:"Siren",abilities:[Ability.Charm]},
+        [Species.Oracle]:{emoji:"🔮",name:"Oracle",abilities:[Ability.Telepathy]}, [Species.Slime]:{emoji:"🟢",name:"Slime",abilities:[Ability.Regeneration]},
+        [Species.Scorpion]:{emoji:"🦂",name:"Scorpion",abilities:[Ability.Venom]}, [Species.Turtle]:{emoji:"🐢",name:"Turtle",abilities:[Ability.Shell]},
+        [Species.Wraith]:{emoji:"💀",name:"Wraith",abilities:[Ability.Phase]}, [Species.Chimera]:{emoji:"🦁",name:"Chimera",abilities:[Ability.Strength,Ability.Speed]},
+        [Species.Alpha]:{emoji:"👑",name:"Alpha",abilities:[Ability.Shell,Ability.Regeneration,Ability.Strength]}, [Species.Player]:{emoji:"🧬",name:"You",abilities:[]}
+    };
+    function speciesForAbility(ab){return {[Ability.Speed]:Species.Swiftling,[Ability.Strength]:Species.Brute,[Ability.Stealth]:Species.Phantom,[Ability.Flight]:Species.Skywing,[Ability.Poison]:Species.Serpent,[Ability.Charm]:Species.Siren,[Ability.Telepathy]:Species.Oracle,[Ability.Regeneration]:Species.Slime,[Ability.Venom]:Species.Scorpion,[Ability.Shell]:Species.Turtle,[Ability.Phase]:Species.Wraith}[ab];}
+
+    // --- Utilities ---
+    let randInt=(min,max)=>Math.floor(Math.random()*(max-min+1))+min;
+    let fdist=(x1,y1,x2,y2)=>Math.hypot(x2-x1,y2-y1);
+    function tileHash(x,y){let h=(x*374761393+y*668265263)|0;h=Math.imul(h^(h>>>13),1274126177);return h^(h>>>16);}
+    function canMoveTo(tile,ab){if(tile===Tile.WALL)return ab.has(Ability.Strength)||ab.has(Ability.Phase);if(tile===Tile.WATER)return ab.has(Ability.Flight);return true;}
+    function col(r,g,b,a=1){return`rgba(${r*255|0},${g*255|0},${b*255|0},${a})`;}
+    function getTheme(){return THEMES[Math.min(Math.floor((game.level-1)/3), THEMES.length-1)];}
+    function hasSynergy(a,b){return game.player.abilities.has(a)&&game.player.abilities.has(b);}
+
+    // --- Audio ---
+    let audioCtx=null;
+    function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();}
+    function playSound(freq,type,dur,vol=0.1,delay=0){if(!audioCtx)return;if(audioCtx.state==='suspended')audioCtx.resume();const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.frequency.value=freq;o.type=type;let t=audioCtx.currentTime+delay;g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.001,t+dur);o.start(t);o.stop(t+dur);}
+    const SFX={
+        step:()=>playSound(150,'square',0.05,0.05), hit:()=>{playSound(200,'sawtooth',0.1,0.15);playSound(100,'square',0.15,0.1);},
+        hurt:()=>playSound(80,'sawtooth',0.2,0.2), mate:()=>{playSound(400,'sine',0.15,0.1);playSound(600,'sine',0.2,0.1,0.1);},
+        lvlUp:()=>{[400,500,600,800].forEach((f,i)=>playSound(f,'sine',0.2,0.1,i*0.1));}, unlock:()=>{playSound(500,'sine',0.1,0.15);playSound(700,'sine',0.3,0.15,0.15);},
+        smash:()=>playSound(60,'sawtooth',0.2,0.2), select:()=>playSound(300,'sine',0.1,0.05), spike:()=>playSound(900,'square',0.05,0.15), heal:()=>playSound(500,'sine',0.15,0.08)
+    };
+
+    // --- AI ---
+    function calcAiMove(c,others,idx,pPos,ePos,map,stealthed){
+        const px=pPos.x,py=pPos.y,cx=c.x,cy=c.y,distP=fdist(cx,cy,px,py);
+        const toward=(tx,ty)=>Math.abs(tx-cx)>Math.abs(ty-cy)?[Math.sign(tx-cx),0]:[0,Math.sign(ty-cy)];
+        const away=(tx,ty)=>Math.abs(cx-tx)>Math.abs(cy-ty)?[Math.sign(cx-tx),0]:[0,Math.sign(cy-ty)];
+        const rdir=>[[-1,0],[1,0],[0,-1],[0,1],[0,0]][randInt(0,4)];
+        const b=c.behavior;
+        switch(b.type){
+            case'Wander':b.timer--;if(b.timer<=0){b.timer=randInt(3,12);b.dir=rdir();}return b.dir;
+            case'Chase':return(stealthed||distP>b.range)?[0,0]:toward(px,py);
+            case'Flee':return distP>b.range?rdir():away(px,py);
+            case'Patrol':{if(!b.points.length)return[0,0];let t=b.points[b.idx];if(cx===t[0]&&cy===t[1]){if(b.forward){if(b.idx+1<b.points.length)b.idx++;else b.forward=false;}else{if(b.idx>0)b.idx--;else b.forward=true;}}return toward(b.points[b.idx][0],b.points[b.idx][1]);}
+            case'Territorial':{let dh=fdist(cx,cy,b.home[0],b.home[1]);if(stealthed)return[0,0];return distP<b.range&&dh<b.range*1.5?toward(px,py):dh>b.range*0.8?toward(b.home[0],b.home[1]):rdir();}
+            case'Hermits':return Math.random()<0.08?rdir():[0,0];
+            case'Social':{let best=null;for(let j=0;j<others.length;j++){if(j===idx||others[j].sp!==c.species)continue;let d=fdist(cx,cy,others[j].x,others[j].y);if(d>1.0&&d<b.flockRange&&(!best||d<best.d))best={d,x:others[j].x,y:others[j].y};}return best?toward(best.x,best.y):rdir();}
+            case'Hunter':{if(stealthed)return[0,0];if(distP>b.range)return Math.random()<0.3?toward(px,py):rdir();let bd=[0,0],bestD=distP;for(let[dx,dy]of[[-1,0],[1,0],[0,-1],[0,1]]){let nx=cx+dx,ny=cy+dy;if(nx>=0&&nx<MAP_W&&ny>=0&&ny<MAP_H&&canMoveTo(map[ny][nx],c.abilities)){let d=fdist(nx,ny,px,py);if(d<bestD){bestD=d;bd=[dx,dy];}}}return bd;}
+            case'Ambush':{if(stealthed)return[0,0];if(b.hidden){if(distP<b.attackRange){b.hidden=false;return toward(px,py);}if(distP<b.waitRange)return[0,0];return Math.random()<0.15?rdir():[0,0];}else{if(distP>b.waitRange){b.hidden=true;return[0,0];}return toward(px,py);}}
+            case'Guard':{let dt=fdist(cx,cy,b.target[0],b.target[1]);if(stealthed)return[0,0];return distP<b.range&&dt<b.range*2.0?toward(px,py):dt>2.0?toward(b.target[0],b.target[1]):rdir();}
+        }return[0,0];
+    }
+
+    // --- State ---
+    let game = null;
+    let mouse = {x: -100, y: -100}; // For hover tooltips
+
+    function createGameState(){return{map:[],fog:[],creatures:[],particles:[],floatingTexts:[],messages:[],player:null,level:0,targetAbility:null,targetSpecies:null,exitPos:{x:0,y:0},exitOpen:false,state:GameState.TITLE,camX:0,camY:0,turnTimer:0,matingPartner:null,score:0,totalKills:0,totalMates:0,shake:0,titleTime:0,levelTransition:0,flashColor:null,flashTimer:0,nudgeX:0,nudgeY:0};}
+    function initPlayer(){return{species:Species.Player,x:1,y:1,hp:12,maxHp:12,xp:0,playerLevel:1,xpToNext:5,abilities:new Set(),behavior:{type:'Wander',timer:0,dir:[0,0]},moveTimer:0,moveCooldown:0.12,hostile:false,mated:false,color:{r:1,g:1,b:1}};}
+
+    function makeCreature(sp,x,y,isTarget){
+        const abilities=new Set(SpeciesData[sp].abilities);
+        const stats={[Species.Swiftling]:{hp:4,cd:0.10,hostile:false,b:{type:'Wander',timer:0,dir:[0,0]},c:{r:1,g:1,b:0}},[Species.Brute]:{hp:16,cd:0.40,hostile:true,b:{type:'Territorial',range:6,home:[x,y]},c:{r:1,g:0,b:0}},[Species.Phantom]:{hp:3,cd:0.20,hostile:false,b:{type:'Wander',timer:0,dir:[0,0]},c:{r:0.7,g:0.7,b:1}},[Species.Skywing]:{hp:5,cd:0.15,hostile:false,b:{type:'Social',flockRange:6},c:{r:0.5,g:0.7,b:1}},[Species.Serpent]:{hp:6,cd:0.20,hostile:true,b:{type:'Ambush',waitRange:8,attackRange:2,hidden:true},c:{r:0,g:1,b:0}},[Species.Siren]:{hp:4,cd:0.25,hostile:false,b:{type:'Wander',timer:0,dir:[0,0]},c:{r:1,g:0.4,b:0.7}},[Species.Oracle]:{hp:5,cd:0.30,hostile:false,b:{type:'Hermits'},c:{r:0.6,g:0,b:1}},[Species.Slime]:{hp:9,cd:0.35,hostile:false,b:{type:'Social',flockRange:5},c:{r:0,g:1,b:0}},[Species.Scorpion]:{hp:7,cd:0.25,hostile:true,b:{type:'Hunter',range:7},c:{r:1,g:0.6,b:0}},[Species.Turtle]:{hp:22,cd:0.50,hostile:false,b:{type:'Territorial',range:3,home:[x,y]},c:{r:0.6,g:0.3,b:0}},[Species.Wraith]:{hp:6,cd:0.18,hostile:true,b:{type:'Chase',range:10},c:{r:0.6,g:0.1,b:0.7}},[Species.Chimera]:{hp:20,cd:0.30,hostile:true,b:{type:'Hunter',range:12},c:{r:1,g:0.8,b:0}},[Species.Alpha]:{hp:35,cd:0.35,hostile:true,b:{type:'Guard',target:[game.exitPos.x,game.exitPos.y],range:8},c:{r:1,g:0.84,b:0}}}[sp];
+        return{species:sp,x,y,hp:stats.hp,maxHp:stats.hp,abilities,behavior:JSON.parse(JSON.stringify(stats.b)),moveTimer:Math.random()*stats.cd,moveCooldown:stats.cd,hostile:isTarget?false:stats.hostile,mated:false,color:stats.c};
+    }
+
+    function addMsg(t){game.messages.unshift({text:t,life:8.0});if(game.messages.length>60)game.messages.pop();}
+    function burst(x,y,emoji,count){for(let i=0;i<count;i++)game.particles.push({x,y,vx:(Math.random()-0.5)*140,vy:(Math.random()-0.5)*180-20,life:0.5+Math.random()*0.9,maxLife:1.4,emoji,size:10+Math.random()*10});}
+    function addFloat(x,y,text,color){game.floatingTexts.push({x:x*TILE_SIZE+TILE_SIZE/2,y:y*TILE_SIZE,text,color,life:1.0,vy:-40});}
+    function triggerFlash(color,dur=0.2){game.flashColor=color;game.flashTimer=dur;}
+    function applyNudge(dx,dy){game.nudgeX=dx*4;game.nudgeY=dy*4;}
+    function randTile(floors,px,py){for(let i=0;i<200;i++){let p=floors[randInt(0,floors.length-1)];if(Math.abs(p.x-px)<4&&Math.abs(p.y-py)<4)continue;if(game.creatures.some(c=>c.x===p.x&&c.y===p.y))continue;return p;}return null;}
+
+    // --- Map Gen ---
+    function generateMap(){
+        let fill=0.46-Math.min(game.level*0.005,0.08);
+        let g=Array.from({length:MAP_H},()=>Array.from({length:MAP_W},()=>Math.random()<fill));
+        for(let x=0;x<MAP_W;x++){g[0][x]=true;g[MAP_H-1][x]=true;}for(let y=0;y<MAP_H;y++){g[y][0]=true;g[y][MAP_W-1]=true;}
+        let iters=5+Math.min(Math.floor(game.level/3),3);
+        for(let it=0;it<iters;it++){let ng=g.map(r=>[...r]);for(let y=1;y<MAP_H-1;y++)for(let x=1;x<MAP_W-1;x++){let w=0;for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)if(g[y+dy][x+dx])w++;ng[y][x]=w>=5;}g=ng;}
+        game.map=Array.from({length:MAP_H},(_,y)=>Array.from({length:MAP_W},(_,x)=>g[y][x]?Tile.WALL:Tile.FLOOR));
+        
+        // Water (Level 3+)
+        if(game.level>=3){let pools=game.level*2+1;for(let i=0;i<pools;i++){let wx=randInt(6,MAP_W-6),wy=randInt(6,MAP_H-6),r=randInt(2,3);for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){let nx=wx+dx,ny=wy+dy;if(nx>0&&nx<MAP_W-1&&ny>0&&ny<MAP_H-1&&dx*dx+dy*dy<=r*r&&game.map[ny][nx]===Tile.FLOOR)game.map[ny][nx]=Tile.WATER;}}}
+        
+        // Keep largest region
+        let vis=Array.from({length:MAP_H},()=>Array(MAP_W).fill(false)),best=[];
+        for(let y=0;y<MAP_H;y++)for(let x=0;x<MAP_W;x++){if(vis[y][x]||(game.map[y][x]!==Tile.FLOOR&&game.map[y][x]!==Tile.WATER))continue;let reg=[],q=[[x,y]];vis[y][x]=true;while(q.length){let[cx,cy]=q.shift();reg.push({x:cx,y:cy});for(let[dx,dy]of[[-1,0],[1,0],[0,-1],[0,1]]){let nx=cx+dx,ny=cy+dy;if(nx>=0&&nx<MAP_W&&ny>=0&&ny<MAP_H&&!vis[ny][nx]&&(game.map[ny][nx]===Tile.FLOOR||game.map[ny][nx]===Tile.WATER)){vis[ny][nx]=true;q.push([nx,ny]);}}}if(reg.length>best.length)best=reg;}
+        let keep=new Set(best.map(p=>`${p.x},${p.y}`));
+        for(let y=0;y<MAP_H;y++)for(let x=0;x<MAP_W;x++)if((game.map[y][x]===Tile.FLOOR||game.map[y][x]===Tile.WATER)&&!keep.has(`${x},${y}`))game.map[y][x]=Tile.WALL;
+        
+        // Environmental Hazards (Level 2+)
+        let floors = best.filter(p=>game.map[p.y][p.x]===Tile.FLOOR);
+        if(game.level >= 2) {
+            let spikeCount = Math.min(game.level * 2, 15);
+            for(let i=0; i<spikeCount; i++) {
+                let p = floors[randInt(0, floors.length-1)];
+                if(p && !(p.x===game.player.x && p.y===game.player.y)) game.map[p.y][p.x] = Tile.SPIKE;
+            }
+            let springCount = Math.min(Math.floor(game.level / 2) + 1, 5);
+            for(let i=0; i<springCount; i++) {
+                let p = floors[randInt(0, floors.length-1)];
+                if(p && game.map[p.y][p.x] === Tile.FLOOR) game.map[p.y][p.x] = Tile.SPRING;
+            }
+        }
+
+        game.fog=Array.from({length:MAP_H},()=>Array(MAP_W).fill(false));
+        if(floors.length){let s=floors[Math.floor(floors.length/4)];game.player.x=s.x;game.player.y=s.y;}
+        let maxd=0,ep={x:MAP_W-2,y:MAP_H-2};
+        for(let p of floors){let d=fdist(p.x,p.y,game.player.x,game.player.y);if(d>maxd){maxd=d;ep=p;}}
+        game.exitPos=ep;game.map[ep.y][ep.x]=Tile.EXIT;
+        return floors;
+    }
+
+    function setupLevel(){
+        game.level++;game.exitOpen=false;game.matingPartner=null;game.levelTransition=1.5;
+        let floors=generateMap();pickTarget();spawnCreatures(floors);
+        addMsg(`🏰 ═══ 🗡️ Level ${game.level} 🗡️ ═══ 🏰`);
+        let themeName = ["Forest","Cave","Inferno","Abyss"][Math.min(Math.floor((game.level-1)/3), 3)];
+        addMsg(`🌌 Theme: ${themeName} Depths`);
+        if(game.targetAbility!==null){let ab=AbilityData[game.targetAbility];if(game.targetSpecies!==null){let sp=SpeciesData[game.targetSpecies];addMsg(`🎯 Target: Bond with ${sp.emoji} ${sp.name} to get ${ab.emoji} ${ab.name}`);}else addMsg(`🎯 Target: Acquire ${ab.emoji} ${ab.name} from any creature`);}else addMsg("🏆 All abilities collected! 🚪 Reach the exit!");
+    }
+
+    function pickTarget(){let avail=AllAbilities.filter(a=>!game.player.abilities.has(a));if(avail.length){let ab=avail[randInt(0,avail.length-1)];game.targetAbility=ab;game.targetSpecies=(game.level%2===0)?speciesForAbility(ab):null;}else{game.targetAbility=null;game.targetSpecies=null;}}
+    
+    function spawnCreatures(floors){
+        game.creatures=[];let pool=[Species.Swiftling,Species.Brute,Species.Phantom,Species.Skywing,Species.Serpent,Species.Siren,Species.Oracle,Species.Slime,Species.Scorpion,Species.Turtle,Species.Wraith];let count=Math.min(8+game.level*3,40);
+        if(game.targetAbility!==null){let ts=speciesForAbility(game.targetAbility);let p=randTile(floors,game.player.x,game.player.y);if(p)game.creatures.push(makeCreature(ts,p.x,p.y,true));}
+        if(game.level%5===0){let p=randTile(floors,game.player.x,game.player.y);if(p)game.creatures.push(makeCreature(Species.Alpha,p.x,p.y,false));}
+        for(let i=1;i<count;i++){if(game.creatures.length>=floors.length-5)break;let sp=pool[randInt(0,pool.length-1)];let p=randTile(floors,game.player.x,game.player.y);if(p)game.creatures.push(makeCreature(sp,p.x,p.y,false));}
+        if(game.level>=4){let p=randTile(floors,game.player.x,game.player.y);if(p)game.creatures.push(makeCreature(Species.Chimera,p.x,p.y,false));}
+        if(game.level>=2){let gsp=pool[randInt(0,pool.length-1)];for(let i=0;i<3;i++){let p=randTile(floors,game.player.x,game.player.y);if(p)game.creatures.push(makeCreature(gsp,p.x,p.y,false));}}
+        if(game.level>=3){let p1=randTile(floors,game.player.x,game.player.y),p2=randTile(floors,game.player.x,game.player.y),p3=randTile(floors,game.player.x,game.player.y);if(p1&&p2&&p3){let c=makeCreature(pool[randInt(0,pool.length-1)],p1.x,p1.y,false);c.behavior={type:'Patrol',points:[[p1.x,p1.y],[p2.x,p2.y],[p3.x,p3.y]],idx:0,forward:true};game.creatures.push(c);}}
+    }
+
+    // --- Logic ---
+    function isVisible(x,y){if(game.player.abilities.has(Ability.Telepathy))return true;let d=fdist(x,y,game.player.x,game.player.y);let vr=game.player.abilities.has(Ability.Stealth)?7.0:11.0;if(d>vr)return false;let steps=Math.ceil(d);for(let i=1;i<steps;i++){let t=i/steps;let cx=Math.round(game.player.x+(x-game.player.x)*t);let cy=Math.round(game.player.y+(y-game.player.y)*t);if(cx>=0&&cx<MAP_W&&cy>=0&&cy<MAP_H&&game.map[cy][cx]===Tile.WALL)return false;}return true;}
+    function reveal(){let r=game.player.abilities.has(Ability.Telepathy)?MAP_W:13;for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){let nx=game.player.x+dx,ny=game.player.y+dy;if(nx>=0&&nx<MAP_W&&ny>=0&&ny<MAP_H&&isVisible(nx,ny))game.fog[ny][nx]=true;}}
+
+    function checkLevelUp() {
+        while(game.player.xp >= game.player.xpToNext) {
+            game.player.xp -= game.player.xpToNext;
+            game.player.playerLevel++;
+            game.player.xpToNext = Math.floor(game.player.xpToNext * 1.5);
+            game.player.maxHp += 2;
+            game.player.hp = game.player.maxHp; // Full heal
+            addMsg(`🌟 LEVEL UP! You are now level ${game.player.playerLevel}! +2 Max HP`);
+            triggerFlash("white", 0.3);
+            SFX.lvlUp();
+            burst(game.player.x*TILE_SIZE, game.player.y*TILE_SIZE, "⭐", 10);
+        }
+    }
+
+    function tryMove(dx,dy){
+        applyNudge(dx,dy);
+        let nx=game.player.x+dx,ny=game.player.y+dy;
+        if(nx<0||nx>=MAP_W||ny<0||ny>=MAP_H)return;
+        let tile=game.map[ny][nx];
+        if(tile===Tile.WALL){if(game.player.abilities.has(Ability.Strength)){game.map[ny][nx]=Tile.FLOOR;game.fog[ny][nx]=true;addMsg("💪💥 You SMASH through the wall! 💥💪");burst(nx*TILE_SIZE,ny*TILE_SIZE,"🧱",6);SFX.smash();game.player.x=nx;game.player.y=ny;afterMove();return;}if(game.player.abilities.has(Ability.Phase)){addMsg("🌀 You phase through the wall... 🌀");SFX.step();game.player.x=nx;game.player.y=ny;afterMove();return;}return;}
+        if(!canMoveTo(tile,game.player.abilities)){if(tile===Tile.WATER)addMsg("🌊 Deep water! Need 🦋 Flight! 🌊");return;}
+        let cIdx=game.creatures.findIndex(c=>c.x===nx&&c.y===ny);
+        if(cIdx!==-1){let c=game.creatures[cIdx];if(c.hostile&&!game.player.abilities.has(Ability.Charm))combat(cIdx);else if(!c.mated){game.state=GameState.MATING_CHOICE;game.matingPartner=cIdx;SFX.select();}else addMsg(`${c.species.emoji()} 💤 Already bonded.`);return;}
+        if(tile===Tile.EXIT&&game.exitOpen){if(game.player.abilities.size===AllAbilities.length){game.state=GameState.WIN;SFX.lvlUp();return;}addMsg("🚪✨ You descend deeper... ✨🚪");SFX.lvlUp();nextLevel();return;}
+        if(tile===Tile.EXIT&&!game.exitOpen){addMsg("🔒 Exit is sealed! Complete the target first! 🔒");return;}
+        
+        game.player.x=nx;game.player.y=ny;
+        
+        // Environmental Hazards
+        if(tile===Tile.SPIKE){let dmg=game.player.abilities.has(Ability.Shell)?1:2;game.player.hp-=dmg;addFloat(nx,ny,`-${dmg}`,"orangered");triggerFlash("red",0.1);SFX.spike();addMsg(`🦴 Ouch! Stepped on spikes! -${dmg} HP`);if(game.player.hp<=0){game.player.hp=0;game.state=GameState.DEAD;addMsg("💀💀💀 YOU HAVE FALLEN 💀💀💀");}}
+        if(tile===Tile.SPRING){let heal=3;game.player.hp=Math.min(game.player.hp+heal,game.player.maxHp);addFloat(nx,ny,`+${heal}`,"lime");SFX.heal();addMsg(`💧 Refreshing spring! +${heal} HP`);}
+        if(tile===Tile.WATER)addMsg("🌊 You fly over the water 🦋");
+        SFX.step();afterMove();
+    }
+
+    function doWait(){SFX.select();afterMove();}
+    function afterMove(){
+        game.turnTimer = game.player.moveCooldown - (hasSynergy(Ability.Strength, Ability.Speed) ? 0.02 : 0); // Synergy: Faster
+        let oldHp=game.player.hp;
+        let regenAmt = hasSynergy(Ability.Shell, Ability.Regeneration) ? 2 : 1; // Synergy: Better Regen
+        if(game.player.abilities.has(Ability.Regeneration))game.player.hp=Math.min(game.player.hp+regenAmt,game.player.maxHp);
+        if(game.player.hp>oldHp)addFloat(game.player.x,game.player.y,`+${game.player.hp-oldHp}`,"lime");
+        if(game.player.abilities.has(Ability.Venom)){for(let c of game.creatures){if(c.hostile&&fdist(c.x,c.y,game.player.x,game.player.y)<=2.0){c.hp--;if(c.hp<=0){addMsg(`☠️ ${c.species.emoji()} melted from venom! ✨`);game.score+=10;game.totalKills++;game.player.xp+=1;checkLevelUp();burst(c.x*TILE_SIZE,c.y*TILE_SIZE,c.species.emoji,8);}}}game.creatures=game.creatures.filter(c=>c.hp>0);}
+    }
+
+    function combat(idx){
+        let pdmg=(game.player.abilities.has(Ability.Strength)?4:2)+(game.player.abilities.has(Ability.Poison)?2:0);
+        if(hasSynergy(Ability.Poison, Ability.Venom)) pdmg += 1; // Synergy: Deadly Toxins
+        let c=game.creatures[idx];c.hp-=pdmg;game.shake=0.25;SFX.hit();burst(c.x*TILE_SIZE,c.y*TILE_SIZE,"⚔️",5);addFloat(c.x,c.y,`-${pdmg}`,"red");addMsg(`⚔️ You strike ${c.species.emoji()} for ${pdmg} damage! 💢`);
+        if(c.hp<=0){addMsg(`☠️ ${c.species.emoji()} is defeated! +10 pts ✨`);game.score+=10;game.totalKills++;game.player.xp+=1;checkLevelUp();burst(c.x*TILE_SIZE,c.y*TILE_SIZE,c.species.emoji,8);burst(c.x*TILE_SIZE,c.y*TILE_SIZE,"💀",3);game.creatures.splice(idx,1);}
+        afterMove();
+    }
+
+    function creatureAttackPlayer(c){
+        let dmg=c.species===Species.Alpha?4:c.species===Species.Chimera?3:2;
+        if(game.player.abilities.has(Ability.Shell)){dmg=Math.max(Math.floor(dmg/2),1);addMsg("🛡 Shell absorbs the blow! 🛡");}
+        game.player.hp-=dmg;game.shake=0.18;SFX.hurt();triggerFlash("red",0.15);burst(game.player.x*TILE_SIZE,game.player.y*TILE_SIZE,"💔",4);addFloat(game.player.x,game.player.y,`-${dmg}`,"orangered");addMsg(`👿 ${c.species.emoji()} hits you for ${dmg}! 🩸`);
+        if(game.player.hp<=0){game.player.hp=0;game.state=GameState.DEAD;addMsg("💀💀💀 YOU HAVE FALLEN 💀💀💀");}
+    }
+
+    function doMate(){
+        let idx=game.matingPartner;
+        if(idx!==null&&idx<game.creatures.length){
+            let c=game.creatures[idx];let gained=[...c.abilities].filter(a=>!game.player.abilities.has(a));
+            if(!gained.length)addMsg(`🤝 Bonded with ${c.species.emoji()} but gained nothing new 🤝`);
+            for(let a of gained){game.player.abilities.add(a);addMsg(`✨🧬 Acquired ${AbilityData[a].emoji} ${AbilityData[a].name}! 🧬✨`);triggerFlash("lime",0.2);}
+            c.mated=true;game.score+=25;game.totalMates++;game.player.xp+=2;checkLevelUp();SFX.mate();burst(c.x*TILE_SIZE,c.y*TILE_SIZE,"💕",10);burst(c.x*TILE_SIZE,c.y*TILE_SIZE,"✨",6);
+            if(game.targetAbility!==null&&game.player.abilities.has(game.targetAbility)){if(game.targetSpecies===null||c.species===game.targetSpecies){game.exitOpen=true;SFX.unlock();addMsg("🏆🎯 TARGET COMPLETE! Exit is OPEN! 🎯🏆");burst(game.exitPos.x*TILE_SIZE,game.exitPos.y*TILE_SIZE,"🚪",12);burst(game.exitPos.x*TILE_SIZE,game.exitPos.y*TILE_SIZE,"🎉",8);}}
+            if(game.targetAbility===null&&!game.exitOpen){game.exitOpen=true;SFX.unlock();addMsg("🏆🧬 ALL ABILITIES COLLECTED! Exit OPEN! 🧬🏆");burst(game.exitPos.x*TILE_SIZE,game.exitPos.y*TILE_SIZE,"🚪",12);}
+            afterMove();
+        }
+        game.matingPartner=null;game.state=GameState.PLAYING;
+    }
+
+    function aiTurn(){
+        let others=game.creatures.map(c=>({sp:c.species,x:c.x,y:c.y}));let pPos={x:game.player.x,y:game.player.y};let ePos=game.exitPos;let stealthed=game.player.abilities.has(Ability.Stealth);
+        let moves=game.creatures.map((c,i)=>{let[dx,dy]=calcAiMove(c,others,i,pPos,ePos,game.map,stealthed);return{i,dx,dy};});
+        for(let m of moves){if(m.i>=game.creatures.length||(m.dx===0&&m.dy===0))continue;let c=game.creatures[m.i];let nx=c.x+m.dx,ny=c.y+m.dy;if(nx<0||nx>=MAP_W||ny<0||ny>=MAP_H)continue;if(!canMoveTo(game.map[ny][nx],c.abilities))continue;if(game.creatures.some(o=>o.x===nx&&o.y===ny))continue;if(nx===game.player.x&&ny===game.player.y){if(c.hostile)creatureAttackPlayer(c);continue;}c.x=nx;c.y=ny;if(c.abilities.has(Ability.Regeneration))c.hp=Math.min(c.hp+1,c.maxHp);}
+        game.creatures=game.creatures.filter(c=>c.hp>0);
+    }
+
+    function nextLevel(){let bonus=50*game.level;game.score+=bonus;addMsg(`✅ Level ${game.level} complete! +${bonus} pts 🎉`);triggerFlash("white",0.3);game.player.hp=Math.min(game.player.hp+Math.floor(game.player.maxHp/3),game.player.maxHp);addFloat(game.player.x,game.player.y,`+${Math.floor(game.player.maxHp/3)}`,"lime");addMsg(`💚 Healed to ${game.player.hp}/${game.player.maxHp} HP`);setupLevel();}
+
+    // --- Input ---
+    let keys={};
+    window.addEventListener('keydown',e=>{initAudio();keys[e.code]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();});
+    window.addEventListener('keyup',e=>{keys[e.code]=false;});
+    window.addEventListener('mousemove',e=>{let r=canvas.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;});
+    window.addEventListener('mouseleave',()=>{mouse.x=-100;mouse.y=-100;});
+
+    let touchState={active:false,dir:null,wait:false};
+    function getDpadLayout(){let size=Math.max(Math.min(canvas.width,canvas.height)*0.15,60);let cx=canvas.width-size*2.5,cy=canvas.height-size*2.5;return{size,center:{x:cx,y:cy},up:{x:cx,y:cy-size},down:{x:cx,y:cy+size},left:{x:cx-size,y:cy},right:{x:cx+size,y:cy}};}
+    function handleTouchStart(e){e.preventDefault();initAudio();let touch=e.changedTouches[0];let rect=canvas.getBoundingClientRect();let x=touch.clientX-rect.left,y=touch.clientY-rect.top;let dpad=getDpadLayout();let hitR=dpad.size*0.8;const check=b=>fdist(x,y,b.x,b.y)<hitR;
+        if(game.state===GameState.TITLE||game.state===GameState.DEAD||game.state===GameState.WIN){if(game.state===GameState.TITLE){game.state=GameState.PLAYING;setupLevel();}else{game=createGameState();game.player=initPlayer();game.state=GameState.PLAYING;setupLevel();}return;}
+        if(game.state===GameState.MATING_CHOICE){if(x<canvas.width/2){game.matingPartner=null;game.state=GameState.PLAYING;addMsg("🚶 You walk away... 🚶");}else doMate();return;}
+        if(check(dpad.up))touchState.dir=[0,-1];else if(check(dpad.down))touchState.dir=[0,1];else if(check(dpad.left))touchState.dir=[-1,0];else if(check(dpad.right))touchState.dir=[1,0];else if(check(dpad.center))touchState.wait=true;touchState.active=true;}
+    function handleTouchEnd(e){e.preventDefault();touchState.active=false;touchState.dir=null;touchState.wait=false;}
+    canvas.addEventListener('touchstart',handleTouchStart,{passive:false});canvas.addEventListener('touchend',handleTouchEnd,{passive:false});canvas.addEventListener('touchcancel',handleTouchEnd,{passive:false});
+
+    function handleInput(){
+        if(game.state===GameState.TITLE){if(keys['Space']||keys['Enter']){game.state=GameState.PLAYING;setupLevel();keys['Space']=false;keys['Enter']=false;}return;}
+        if(game.state===GameState.DEAD||game.state===GameState.WIN){if(keys['Space']||keys['Enter']){game=createGameState();game.player=initPlayer();game.state=GameState.PLAYING;setupLevel();keys['Space']=false;keys['Enter']=false;}return;}
+        if(game.state===GameState.MATING_CHOICE){if(keys['KeyY']||keys['Enter']){doMate();keys['KeyY']=false;keys['Enter']=false;}if(keys['KeyN']||keys['Escape']){game.matingPartner=null;game.state=GameState.PLAYING;addMsg("🚶 You walk away... 🚶");keys['KeyN']=false;keys['Escape']=false;}return;}
+        if(game.turnTimer>0)return;
+        let dx=0,dy=0;
+        if(keys['KeyW']||keys['ArrowUp'])dy=-1;else if(keys['KeyS']||keys['ArrowDown'])dy=1;else if(keys['KeyA']||keys['ArrowLeft'])dx=-1;else if(keys['KeyD']||keys['ArrowRight'])dx=1;else if(keys['Space']||keys['Period'])doWait();
+        if(touchState.dir){dx=touchState.dir[0];dy=touchState.dir[1];}else if(touchState.wait){doWait();touchState.wait=false;}
+        if(dx||dy)tryMove(dx,dy);
+    }
+
+    function update(dt){
+        game.titleTime+=dt;game.shake=Math.max(0,game.shake-dt*2);game.levelTransition=Math.max(0,game.levelTransition-dt);game.flashTimer=Math.max(0,game.flashTimer-dt);
+        game.nudgeX*=0.8;game.nudgeY*=0.8; // Decay nudge
+        game.messages.forEach(m=>m.life-=dt);game.messages=game.messages.filter(m=>m.life>0);
+        for(let p of game.particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=130*dt;p.life-=dt;}game.particles=game.particles.filter(p=>p.life>0);
+        for(let ft of game.floatingTexts){ft.y+=ft.vy*dt;ft.life-=dt*1.5;}game.floatingTexts=game.floatingTexts.filter(ft=>ft.life>0);
+        if(game.state!==GameState.PLAYING)return;
+        let anyAi=false;for(let c of game.creatures){c.moveTimer-=dt;if(c.moveTimer<=0){c.moveTimer=c.moveCooldown;anyAi=true;}}
+        if(anyAi)aiTurn();
+        if(game.turnTimer>0)game.turnTimer-=dt;
+        let gameAreaW=canvas.width-PANEL_W;let tx=game.player.x*TILE_SIZE-gameAreaW/2;let ty=game.player.y*TILE_SIZE-canvas.height/2;
+        tx=Math.max(0,Math.min(tx,MAP_W*TILE_SIZE-gameAreaW));ty=Math.max(0,Math.min(ty,MAP_H*TILE_SIZE-canvas.height));
+        game.camX+=(tx-game.camX)*6*dt;game.camY+=(ty-game.camY)*6*dt;
+        reveal();
+    }
+
+    // --- Drawing ---
+    function drawGame(){
+        let sx=game.shake>0?(Math.random()-0.5)*6*game.shake*10:0;let sy=game.shake>0?(Math.random()-0.5)*6*game.shake*10:0;
+        ctx.save();ctx.translate(PANEL_W-game.camX+sx+game.nudgeX, -game.camY+sy+game.nudgeY);
+        let vw=Math.ceil(canvas.width/TILE_SIZE)+3,vh=Math.ceil(canvas.height/TILE_SIZE)+3;let sx0=Math.floor(game.camX/TILE_SIZE)-1,sy0=Math.floor(game.camY/TILE_SIZE)-1;let t=game.titleTime;let theme=getTheme();
+
+        for(let vy=sy0;vy<sy0+vh;vy++)for(let vx=sx0;vx<sx0+vw;vx++){
+            if(vx<0||vx>=MAP_W||vy<0||vy>=MAP_H)continue;let ux=vx,uy=vy;if(!game.fog[uy][ux])continue;let vis=isVisible(vx,vy);let px=vx*TILE_SIZE,py=vy*TILE_SIZE;let h=tileHash(vx,vy)>>>0;
+            if(game.map[uy][ux]===Tile.WALL){let s=vis?0.35:0.18;ctx.fillStyle=col(s,s*0.85,s*0.65);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);ctx.strokeStyle=col(s*0.7,s*0.6,s*0.45);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(px,py+TILE_SIZE*0.5);ctx.lineTo(px+TILE_SIZE,py+TILE_SIZE*0.5);ctx.stroke();ctx.beginPath();ctx.moveTo(px+TILE_SIZE*0.5,py);ctx.lineTo(px+TILE_SIZE*0.5,py+TILE_SIZE*0.5);ctx.stroke();}
+            else if(game.map[uy][ux]===Tile.FLOOR){ctx.fillStyle=col(theme.floor[0],theme.floor[1],theme.floor[2],vis?1:0.5);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);if(vis){let di=(h>>3);ctx.font="9px serif";ctx.fillStyle=col(1,1,1,0.18);if(di%19===0)ctx.fillText("🌿",px+1,py+10);else if(di%23===0)ctx.fillText("🪨",px+1,py+10);else if(di%29===0)ctx.fillText("🍄",px+1,py+10);else if(di%37===0)ctx.fillText("💎",px+1,py+10);else if(di%41===0)ctx.fillText("🌸",px+1,py+10);else if(di%47===0)ctx.fillText("🍂",px+1,py+10);}}
+            else if(game.map[uy][ux]===Tile.WATER){let w=0.2+0.1*Math.sin(t*2+vx*0.5);ctx.fillStyle=col(0.05,0.15,w,vis?0.8:0.35);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);if(vis&&h%11===0){let b=Math.sin(t*2+vx*0.3)*2;ctx.font="9px serif";ctx.fillStyle=col(1,1,1,0.2);ctx.fillText("🐟",px+2,py+2+b);}else if(vis&&h%17===0){let b=Math.sin(t*1.5+vy*0.4)*2;ctx.font="8px serif";ctx.fillStyle=col(1,1,1,0.18);ctx.fillText("🐠",px+2,py+2+b);}}
+            else if(game.map[uy][ux]===Tile.SPIKE){ctx.fillStyle=col(0.15,0.1,0.1,vis?1:0.5);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);if(vis){ctx.font="12px serif";ctx.fillText("🦴",px+2,py+12);}}
+            else if(game.map[uy][ux]===Tile.SPRING){ctx.fillStyle=col(0.1,0.2,0.3,vis?1:0.5);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);if(vis){let b=Math.sin(t*3)*2;ctx.font="12px serif";ctx.fillText("💧",px+2,py+12+b);}}
+            else if(game.map[uy][ux]===Tile.EXIT){if(game.exitOpen){let p=0.5+0.5*Math.sin(t*4);ctx.fillStyle=col(0.1,0.3+0.2*p,0.1);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);for(let i=0;i<4;i++){let an=t*2+i*1.57;ctx.font="7px serif";ctx.fillStyle=col(1,1,0.5,0.4+0.3*p);ctx.fillText("✨",px+Math.cos(an)*10,py+Math.sin(an)*10+8);}}else{ctx.fillStyle=col(0.25,0.1,0.1);ctx.fillRect(px,py,TILE_SIZE,TILE_SIZE);}}
+        }
+
+        // Creatures
+        for(let c of game.creatures){
+            if(!game.fog[c.y][c.x]||(!isVisible(c.x,c.y)&&!game.player.abilities.has(Ability.Telepathy)))continue;let px=c.x*TILE_SIZE,py=c.y*TILE_SIZE;
+            ctx.beginPath();ctx.arc(px+TILE_SIZE/2,py+TILE_SIZE/2,TILE_SIZE*0.55,0,Math.PI*2);ctx.fillStyle=col(c.color.r*0.3,c.color.g*0.3,c.color.b*0.3,c.mated?0.15:0.3);ctx.fill();
+            if(game.targetSpecies!==null&&c.species===game.targetSpecies&&!c.mated){let p=0.3+0.7*Math.sin(t*5);ctx.beginPath();ctx.arc(px+TILE_SIZE/2,py+TILE_SIZE/2,TILE_SIZE*0.7,0,Math.PI*2);ctx.fillStyle=col(1,1,0,p*0.25);ctx.fill();ctx.font="10px serif";ctx.fillStyle=col(1,1,0,p);ctx.fillText("🎯",px-3,py-2);}
+            ctx.font=`${TILE_SIZE+2}px serif`;ctx.fillStyle="white";ctx.fillText(SpeciesData[c.species].emoji,px-2,py+TILE_SIZE-1);
+            if(c.hp<c.maxHp){ctx.fillStyle=col(0.3,0,0,0.8);ctx.fillRect(px,py-3,TILE_SIZE,2.5);ctx.fillStyle=c.hp/c.maxHp>0.5?"green":"red";ctx.fillRect(px,py-3,TILE_SIZE*(c.hp/c.maxHp),2.5);}
+            ctx.font="8px serif";if(c.hostile&&!c.mated){ctx.fillStyle="red";ctx.fillText("⚠️",px+TILE_SIZE-8,py-5);}if(c.mated){ctx.fillStyle="green";ctx.fillText("✅",px+TILE_SIZE-8,py-5);}
+        }
+
+        // Player
+        let ppx=game.player.x*TILE_SIZE,ppy=game.player.y*TILE_SIZE;
+        ctx.beginPath();ctx.arc(ppx+TILE_SIZE/2,ppy+TILE_SIZE/2,TILE_SIZE*0.8,0,Math.PI*2);ctx.fillStyle=col(0.2,1,0.4,0.12+0.08*Math.sin(t*3));ctx.fill();
+        ctx.font=`${TILE_SIZE+2}px serif`;ctx.fillStyle="white";ctx.fillText("🧬",ppx-2,ppy+TILE_SIZE-1);
+
+        // Exit
+        if(game.fog[game.exitPos.y][game.exitPos.x]){ctx.font=`${TILE_SIZE+2}px serif`;ctx.fillStyle="white";ctx.fillText(game.exitOpen?"🚪":"🔒",game.exitPos.x*TILE_SIZE-2,game.exitPos.y*TILE_SIZE+TILE_SIZE-1);}
+
+        // Particles & Texts
+        for(let p of game.particles){let a=Math.min(1,p.life/p.maxLife);ctx.globalAlpha=a;ctx.font=`${p.size*a}px serif`;ctx.fillText(p.emoji,p.x-p.size/2,p.y);}ctx.globalAlpha=1;
+        ctx.textAlign="center";for(let ft of game.floatingTexts){ctx.globalAlpha=Math.min(1,ft.life);ctx.font="bold 14px sans-serif";ctx.fillStyle=ft.color;ctx.fillText(ft.text,ft.x,ft.y);}ctx.globalAlpha=1;ctx.textAlign="left";
+        ctx.restore();
+    }
+
+    function drawTooltip() {
+        if (mouse.x < PANEL_W || game.state !== GameState.PLAYING) return;
+        // Convert screen mouse to world coords
+        let wx = Math.floor((mouse.x - PANEL_W + game.camX) / TILE_SIZE);
+        let wy = Math.floor((mouse.y + game.camY) / TILE_SIZE);
+        
+        if (wx<0||wx>=MAP_W||wy<0||wy>=MAP_H) return;
+        if (!isVisible(wx, wy) && !game.player.abilities.has(Ability.Telepathy)) return;
+
+        let tile = game.map[wy][wx];
+        let c = game.creatures.find(cr => cr.x === wx && cr.y === wy);
+        let lines = [];
+
+        // Tile Info
+        const tileNames = {[Tile.WALL]:"Wall", [Tile.FLOOR]:"Floor", [Tile.WATER]:"Water", [Tile.EXIT]:"Exit", [Tile.SPIKE]:"Spike Trap 🦴", [Tile.SPRING]:"Healing Spring 💧"};
+        lines.push(tileNames[tile] || "Unknown");
+
+        // Creature Info
+        if (c) {
+            lines.push(`--- ${SpeciesData[c.species].emoji} ${SpeciesData[c.species].name} ---`);
+            lines.push(`HP: ${c.hp}/${c.maxHp} ${c.hostile?"(Hostile ⚠️)":"(Friendly)"}`);
+            if (c.mated) lines.push("Status: Bonded ✅");
+            let abs = [...c.abilities].map(a => AbilityData[a].emoji + " " + AbilityData[a].name);
+            if(abs.length) lines.push("Has: " + abs.join(", "));
+        }
+        if (wx === game.player.x && wy === game.player.y) {
+            lines.push("--- 🧬 You ---");
+            lines.push(`HP: ${game.player.hp}/${game.player.maxHp} | Lvl: ${game.player.playerLevel}`);
+            lines.push(`XP: ${game.player.xp}/${game.player.xpToNext}`);
+        }
+
+        if (lines.length <= 1 && !c && !(wx===game.player.x&&wy===game.player.y)) return; // Don't draw for empty floors
+
+        let boxW = Math.max(...lines.map(l => ctx.measureText(l).width)) + 20;
+        let boxH = lines.length * 18 + 10;
+        let bx = mouse.x + 15;
+        let by = mouse.y - boxH - 5;
+        
+        // Keep on screen
+        if (bx + boxW > canvas.width) bx = mouse.x - boxW - 15;
+        if (by < 0) by = mouse.y + 15;
+
+        ctx.fillStyle = col(0.05, 0.05, 0.1, 0.95);
+        ctx.strokeStyle = col(0.5, 0.5, 0.6, 0.8);
+        ctx.lineWidth = 1;
+        ctx.fillRect(bx, by, boxW, boxH);
+        ctx.strokeRect(bx, by, boxW, boxH);
+
+        ctx.font = "13px monospace";
+        ctx.fillStyle = "white";
+        lines.forEach((line, i) => {
+            ctx.fillStyle = line.includes("Hostile") ? "red" : line.includes("Friendly") ? "lime" : line.includes("You") ? "cyan" : "white";
+            ctx.fillText(line, bx + 10, by + 16 + i * 18);
+        });
+
+        // Highlight tile
+        ctx.save();
+        ctx.translate(PANEL_W - game.camX + game.nudgeX, -game.camY + game.nudgeY);
+        ctx.strokeStyle = col(1, 1, 1, 0.5);
+        ctx.lineWidth = 2;
+        ctx.strokeRect(wx * TILE_SIZE, wy * TILE_SIZE, TILE_SIZE, TILE_SIZE);
+        ctx.restore();
+    }
+
+    function drawHud(){
+        let sw=canvas.width,sh=canvas.height,theme=getTheme();
+        ctx.fillStyle=col(0.03,0.03,0.06,0.95);ctx.fillRect(0,0,PANEL_W,sh);
+        ctx.strokeStyle=col(0.2,0.2,0.35,0.6);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(PANEL_W,0);ctx.lineTo(PANEL_W,sh);ctx.stroke();
+        let y=8;ctx.font="18px serif";ctx.fillStyle="gold";ctx.fillText("🧬 GENE BOND 🧬",6,y+16);y+=26;
+        ctx.font="14px serif";ctx.fillStyle="white";ctx.fillText(`🏰 Level ${game.level} | 🌟 Lvl ${game.player.playerLevel}`,8,y+12);y+=18;
+        
+        // XP Bar
+        ctx.fillStyle="yellow";ctx.fillText(`⭐ XP: ${game.player.xp}/${game.player.xpToNext}`,8,y+12);
+        ctx.fillStyle=col(0.2,0.2,0.05,0.8);ctx.fillRect(150,y+2,80,10);
+        ctx.fillStyle="gold";ctx.fillRect(150,y+2,80*(game.player.xp/game.player.xpToNext),10);
+        y+=18;
+
+        ctx.fillStyle="yellow";ctx.font="15px serif";ctx.fillText(`Score: ${game.score}`,8,y+14);y+=22;
+
+        // HP Bar
+        ctx.fillStyle="white";ctx.font="15px serif";ctx.fillText("❤️ HP:",8,y+14);
+        ctx.fillStyle=col(0.25,0.05,0.05,0.9);ctx.fillRect(55,y,170,14);
+        let r=game.player.hp/game.player.maxHp;ctx.fillStyle=r>0.6?"green":r>0.3?"orange":"red";ctx.fillRect(55,y,170*r,14);
+        ctx.fillStyle="white";ctx.font="11px serif";ctx.fillText(`${game.player.hp}/${game.player.maxHp}`,59,y+11);y+=22;
+
+        ctx.font="11px serif";ctx.fillStyle=col(0.6,0.5,0.8,0.8);ctx.fillText("🧬━━ ABILITIES ━━🧬",4,y+10);y+=16;
+        ctx.font="11px serif";
+        for(let ab of AllAbilities){let has=game.player.abilities.has(ab);ctx.fillStyle=has?"white":col(0.25,0.25,0.25);ctx.fillText(`${has?"✅":"⬜"} ${AbilityData[ab].emoji} ${AbilityData[ab].name}`,6,y+11);y+=14;}
+        
+        // Synergies
+        let synergies = [];
+        if(hasSynergy(Ability.Poison, Ability.Venom)) synergies.push("🐍☠ Toxic Strike");
+        if(hasSynergy(Ability.Strength, Ability.Speed)) synergies.push("💪⚡ Bull Rush");
+        if(hasSynergy(Ability.Shell, Ability.Regeneration)) synergies.push("🛡💚 Fortress");
+        if(synergies.length) {
+            y+=4; ctx.fillStyle="cyan"; ctx.fillText("🔥 SYNERGIES:", 6, y+11); y+=14;
+            synergies.forEach(s => { ctx.fillStyle="cyan"; ctx.fillText(s, 10, y+11); y+=13; });
+        }
+
+        y+=4;ctx.font="11px serif";ctx.fillStyle="yellow";ctx.fillText("🎯━━ TARGET ━━🎯",4,y+10);y+=16;
+        if(game.targetAbility!==null){let hasIt=game.player.abilities.has(game.targetAbility);ctx.fillStyle=hasIt?"green":"white";ctx.font="13px serif";ctx.fillText(`${AbilityData[game.targetAbility].emoji} ${AbilityData[game.targetAbility].name} ${hasIt?"✅":"❌"}`,8,y+12);y+=16;if(game.targetSpecies!==null){ctx.font="11px serif";ctx.fillStyle="lightgray";ctx.fillText(`📋 ${SpeciesData[game.targetSpecies].emoji} ${SpeciesData[game.targetSpecies].name}`,8,y+11);y+=14;}}
+        else{ctx.font="12px serif";ctx.fillStyle="green";ctx.fillText("🏆 All collected! ✅",8,y+12);y+=16;}
+        y+=4;ctx.font="13px serif";ctx.fillStyle=game.exitOpen?"green":"darkgray";ctx.fillText(game.exitOpen?"🚪✨ EXIT OPEN! 🚪":"🔒 Exit sealed",6,y+12);y+=20;
+
+        // Minimap
+        let ms=2,mw=MAP_W*ms,mh=MAP_H*ms,mx=8,my=sh-mh-28;
+        ctx.font="10px serif";ctx.fillStyle="gray";ctx.fillText("🗺️ MAP",mx,my);ctx.fillStyle=col(0.15,0.15,0.2,0.95);ctx.fillRect(mx-1,my+4,mw+2,mh+2);
+        for(let y2=0;y2<MAP_H;y2++)for(let x2=0;x2<MAP_W;x2++){if(!game.fog[y2][x2])continue;let c=game.map[y2][x2]===Tile.WALL?col(0.22,0.2,0.16):game.map[y2][x2]===Tile.FLOOR?col(theme.floor[0]*2,theme.floor[1]*2,theme.floor[2]*2):game.map[y2][x2]===Tile.WATER?col(0.05,0.1,0.22):game.map[y2][x2]===Tile.SPIKE?"orange":game.map[y2][x2]===Tile.SPRING?"cyan":(game.exitOpen?"green":"darkred");ctx.fillStyle=c;ctx.fillRect(mx+x2*ms,my+4+y2*ms,ms,ms);}
+        ctx.fillStyle="white";ctx.fillRect(mx+game.player.x*ms-0.5,my+4+game.player.y*ms-0.5,ms+1,ms+1);
+
+        // Log
+        let msgW=Math.min(300,sw-PANEL_W-10),msgX=sw-msgW,msgH=sh*0.5;
+        ctx.fillStyle=col(0.03,0.03,0.06,0.85);ctx.fillRect(msgX,0,msgW,msgH);ctx.strokeStyle=col(0.2,0.2,0.35,0.6);ctx.beginPath();ctx.moveTo(msgX,0);ctx.lineTo(msgX,msgH);ctx.stroke();
+        ctx.font="11px serif";ctx.fillStyle=col(0.6,0.5,0.8,0.8);ctx.fillText("📜━━ EVENT LOG ━━📜",msgX+6,16);let ly=32;ctx.textBaseline="top";
+        for(let m of game.messages){let a=Math.min(1,m.life/6);ctx.fillStyle=m.text.includes("✨")||m.text.includes("🏆")?col(0.3,1,0.3,a):m.text.includes("💥")||m.text.includes("hits")?col(1,0.3,0.3,a):m.text.includes("LEVEL UP")?col(1,1,0.2,a):col(0.75,0.75,0.8,a);ctx.fillText(m.text,msgX+6,ly);ly+=14;if(ly>msgH-10)break;}
+        ctx.textBaseline="alphabetic";
+        if(sw>800){ctx.font="10px serif";ctx.fillStyle=col(0.4,0.4,0.5,0.7);ctx.fillText("🎮 Move: WASD/Arrows | Wait: Space",sw-280,sh-28);ctx.fillText("Hover tiles for info! Y/N: Bond",sw-280,sh-14);}
+    }
+
+    function drawDpad(){let dpad=getDpadLayout();let s=dpad.size*0.4;const drawBtn=(pos,text,isAct)=>{ctx.beginPath();ctx.arc(pos.x,pos.y,s,0,Math.PI*2);ctx.fillStyle=isAct?col(1,1,1,0.5):col(0.5,0.5,0.6,0.3);ctx.fill();ctx.font=`${s*1.2}px serif`;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="white";ctx.fillText(text,pos.x,pos.y);ctx.textAlign="left";ctx.textBaseline="alphabetic";};drawBtn(dpad.up,"⬆️",touchState.dir&&touchState.dir[1]===-1);drawBtn(dpad.down,"⬇️",touchState.dir&&touchState.dir[1]===1);drawBtn(dpad.left,"⬅️",touchState.dir&&touchState.dir[0]===-1);drawBtn(dpad.right,"➡️",touchState.dir&&touchState.dir[0]===1);drawBtn(dpad.center,"⏸️",touchState.wait);}
+
+    function drawMatingUI(){
+        ctx.fillStyle=col(0,0,0.05,0.65);ctx.fillRect(0,0,canvas.width,canvas.height);let bw=420,bh=300,bx=canvas.width/2-bw/2,by=canvas.height/2-bh/2;ctx.fillStyle=col(0.08,0.04,0.12,0.97);ctx.fillRect(bx,by,bw,bh);let p=0.5+0.5*Math.sin(game.titleTime*3);ctx.strokeStyle=col(1,0.4+0.6*p,0.6+0.4*p);ctx.lineWidth=2;ctx.strokeRect(bx,by,bw,bh);
+        if(game.matingPartner!==null&&game.matingPartner<game.creatures.length){let c=game.creatures[game.matingPartner];let y=by+20;ctx.font="22px serif";ctx.fillStyle="pink";ctx.textAlign="center";ctx.fillText("💕🧬 Bond Request 🧬💕",canvas.width/2,y);ctx.textAlign="left";y+=40;ctx.font="48px serif";ctx.fillStyle="white";ctx.fillText(c.species.emoji,canvas.width/2-24,y+40);y+=60;ctx.font="18px serif";ctx.fillStyle="lightgray";ctx.fillText(SpeciesData[c.species].name,canvas.width/2-30,y+14);y+=30;ctx.font="14px serif";ctx.fillStyle="gray";ctx.fillText("🎁 Offers abilities:",bx+20,y+12);y+=22;if(!c.abilities.size){ctx.font="14px serif";ctx.fillStyle="darkgray";ctx.fillText("  ❌ No abilities 😢",bx+20,y+12);}else{for(let ab of c.abilities){let has=game.player.abilities.has(ab);ctx.font="14px serif";ctx.fillStyle=has?"gray":"green";ctx.fillText(`  ${AbilityData[ab].emoji} ${AbilityData[ab].name} — ${has?"have ✅":"🆕 NEW! ✨"}`,bx+20,y+12);y+=24;}}y+=12;ctx.font="20px serif";ctx.fillStyle=col(0.3+0.7*p,1,0.3+0.7*p);ctx.textAlign="center";ctx.fillText("🟢 [Y] Bond 💕        🔴 [N] Walk Away 🚶",canvas.width/2,y+16);ctx.textAlign="left";ctx.font="12px serif";ctx.fillStyle="gray";ctx.fillText("Mobile: Tap Left = No, Right = Yes",bx+60,y+40);}
+    }
+
+    function drawOverlay(text,color){
+        ctx.fillStyle=col(0,0,0,0.75);ctx.fillRect(0,0,canvas.width,canvas.height);let t=game.titleTime;
+        for(let i=0;i<16;i++){let an=t*0.3+i*0.3927;ctx.font="20px serif";ctx.fillStyle=col(1,1,1,0.15);ctx.fillText(["💀","🧬","⚡","☠️"][i%4],canvas.width/2+Math.cos(an)*canvas.width*0.4,canvas.height/2+Math.sin(an)*canvas.height*0.35);}
+        ctx.font="34px serif";ctx.fillStyle=color;ctx.textAlign="center";ctx.fillText(text,canvas.width/2,canvas.height/2-20);ctx.textAlign="left";
+        ctx.font="18px serif";ctx.fillStyle="lightgray";ctx.textAlign="center";ctx.fillText(`⭐ Score: ${game.score}  🏰 Level: ${game.level}  🌟 Plvl: ${game.player.playerLevel}`,canvas.width/2,canvas.height/2+25);
+        ctx.font="16px serif";ctx.fillStyle="gray";ctx.fillText(`⚔️ Kills: ${game.totalKills}  💕 Bonds: ${game.totalMates}  🧬 Genes: ${game.player.abilities.size}/${AllAbilities.length}`,canvas.width/2,canvas.height/2+55);
+        let p=0.4+0.6*Math.sin(t*3);ctx.font="20px serif";ctx.fillStyle=col(p,p,p);ctx.fillText("🌟 Press SPACE or Tap to restart 🌟",canvas.width/2,canvas.height/2+95);ctx.textAlign="left";
+    }
+
+    function drawTitle(){
+        let sw=canvas.width,sh=canvas.height,t=game.titleTime;
+        for(let i=0;i<40;i++){let x=((i*53+t*(15+i*0.5))%(sw+60))-30,y=((i*37+t*(8+i*0.3))%(sh+60))-30,s=14+(i%5)*4,a=0.15+0.1*Math.sin(t+i);ctx.font=`${s}px serif`;ctx.fillStyle=col(1,1,1,a);ctx.fillText(BG_EMOJIS[i%BG_EMOJIS.length],x,y+s);}
+        let g=0.5+0.5*Math.sin(t*2);ctx.font="60px serif";ctx.fillStyle=col(0.2,1,0.4,g);ctx.fillText("🧬",sw/2-220,sh/2-80);ctx.fillText("🧬",sw/2+160,sh/2-80);ctx.font="52px serif";ctx.fillStyle="gold";ctx.fillText("🧬 GENE BOND 🧬",sw/2-190,sh/2-70);ctx.font="22px serif";ctx.fillStyle=col(0.8,0.7,1);ctx.fillText("~ A Roguelike Mating Game ~",sw/2-155,sh/2-10);
+        let tips=["🎮 WASD / Arrows to move | Space to Wait","🤝 Bump into creatures to interact","💕 Press Y to mate and gain abilities","🎯 Meet the target to unlock the exit","⚔️ Fight, sneak, or charm hostiles","","🧬━━━━ NEW FEATURES ━━━━🧬","🌟 Level Up: Gain XP to get stronger!","🔥 Synergies: Combine genes for power!","💧 Springs heal, 🦴 Traps hurt!","🖱️ Hover mouse for detailed info!"];
+        ctx.font="15px serif";for(let i=0;i<tips.length;i++){ctx.fillStyle=tips[i].includes("━")?"gold":"gray";ctx.fillText(tips[i],sw/2-260,sh/2+30+i*23);}
+        let p=0.4+0.6*Math.sin(t*3);ctx.font="22px serif";ctx.fillStyle=col(0.3+0.7*p,0.9+0.1*p,0.3+0.7*p);ctx.fillText("🌟 Press SPACE, ENTER, or Tap to begin 🌟",sw/2-260,sh/2+300);
+    }
+
+    function draw(){
+        let theme=getTheme();ctx.clearRect(0,0,canvas.width,canvas.height);ctx.fillStyle=col(theme.bg[0],theme.bg[1],theme.bg[2]);ctx.fillRect(0,0,canvas.width,canvas.height);
+        if(game.state===GameState.TITLE){drawTitle();return;}
+        drawGame();
+        if(game.state===GameState.DEAD){drawHud();drawOverlay("💀☠️ YOU DIED ☠️💀","red");return;}
+        if(game.state===GameState.WIN){drawHud();drawOverlay("🏆🧬 ALL GENES MASTERED! 🧬🏆","gold");return;}
+        drawHud();drawTooltip();
+        if(game.state===GameState.MATING_CHOICE)drawMatingUI();
+        if(game.flashTimer>0){ctx.fillStyle=col(game.flashColor==="red"?1:0,game.flashColor==="green"||game.flashColor==="lime"?1:(game.flashColor==="white"?1:0),game.flashColor==="blue"?1:(game.flashColor==="lime"?0.5:(game.flashColor==="white"?1:0)),game.flashTimer*2);ctx.fillRect(0,0,canvas.width,canvas.height);}
+        if(game.levelTransition>0){ctx.fillStyle=col(1,1,0.8,(game.levelTransition/1.5)*0.5);ctx.fillRect(0,0,canvas.width,canvas.height);}
+        drawDpad();
+    }
+
+    function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;}
+    window.addEventListener('resize',resize);resize();
+    game=createGameState();game.player=initPlayer();
+    let lastTime=0;function loop(time){let dt=Math.min((time-lastTime)/1000,0.05);lastTime=time;handleInput();update(dt);draw();requestAnimationFrame(loop);}
+    requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
